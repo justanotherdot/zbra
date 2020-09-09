@@ -18,6 +18,35 @@ pub enum Value {
     Reversed(Value),
 }
 
+//// TODO to_i64 + from_i64 need tests to lock in the ordering.
+//impl Value {
+    //// like dataToTag# primop.
+    //pub fn to_i64(self) -> i64 {
+        //match self {
+            //Value::Unit => 0,
+            //Value::Int(x) => 1,
+            //Value::Double(x) => 2,
+            //Value::Enum(x, y) => 3,
+            //Value::Struct(xs) => 4,
+            //Value::Nested(x) => 5,
+            //Value::Reversed(x) => 6,
+        //}
+    //}
+
+    //// like tagToEnum# primop.
+    //pub fn from_i64(x: i64) -> Self {
+        //match x {
+            //0 => Value::Unit,
+            //1 => Value::Int(x),
+            //2 => Value::Double(x),
+            //3 => Value::Enum(x, y),
+            //4 => Value::Struct(xs),
+            //5 => Value::Nested(x),
+            //6 => Value::Reversed(x),
+        //}
+    //}
+//}
+
 #[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone)]
 pub enum LogicalMergeError {
     LogicalCannotMergeMismatchedCollections(Table, Table),
@@ -326,5 +355,118 @@ pub fn take_reversed(x: Value) -> Result<Value, LogicalSchemaError> {
         Ok(x)
     } else {
         Err(LogicalExpectedReversed(x))
+    }
+}
+
+pub fn false() -> Value {
+    Enum(0, Unit)
+}
+
+pub fn false() -> Value {
+    Enum(1, Unit)
+}
+
+pub fn none() -> Value {
+    Enum(0, Unit)
+}
+
+pub fn some(x: Value) -> Value {
+    Enum(1, x)
+}
+
+pub fn left(x: Value) -> Value {
+    Enum(0, x)
+}
+
+pub fn right(x: Value, y: Value) -> Value {
+    Struct(vec![x, y])
+}
+
+pub fn compare_tag<A>(x: A, y: A) -> Ordering {
+    if (x as i32 > y as i32) {
+        Ordering::Greater
+    } else {
+        Ordering::Less
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Person) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialOrd for Value {
+    fn cmp(&self, other: &Person) -> Ordering {
+        match self {
+            Value::Unit => {
+                match other {
+                    Value::Unit => Ordering::Eq,
+                    y => compare_tag(Value::Unit, y),
+                }
+            },
+            Value::Int(x) => {
+                match x {
+                    Value::Int(y) => x.cmp(y),
+                    y => compare_tag(Value::Int(x), y),
+                }
+            },
+            Value::Double(x) => {
+                match x {
+                    Value::Double(y) => x.cmp(y),
+                    y => compare_tag(Value::Double(x), y),
+                }
+            },
+            Value::Enum(xtag, xvar) => {
+                match x {
+                    Value::Enum(ytag, yvar) => (xtag, xvar).cmp((ytag, yvar)),
+                    y => compare_tag(Value::Enum(xtag, xvar), y),
+                }
+            },
+            Value::Struct(xs) => {
+                match xs {
+                    Value::Struct(ys) => x.cmp(y),
+                    y => compare_tag(Value::Struct(xs), y),
+                }
+            },
+            Value::Nested(x) => {
+                match x {
+                    Value::Nested(y) => x.cmp(y),
+                    y => compare_tag(Value::Nested(x), y),
+                }
+            },
+            Value::Reversed(x) => {
+                match x {
+                    Value::Reversed(y) => y.cmp(x),
+                    y => compare_tag(Value::Reversed(x), y),
+                }
+            },
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Person) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+pub fn valid(table: Table) -> bool {
+    match table {
+        Table::Binary(_) => true,
+        Table::Array(xs) => xs.iter().all(valid_value),
+        Table::Map(kvs) => kvs.keys().all(valid_value) && kvs.values().all(valid_value),
+    }
+}
+
+pub fn valid_value(x: Value) -> bool {
+    match x {
+        Value::Unit => true,
+        Value::Int(_) => true,
+        Value::Double(_) => true,
+        Value::Enum(_, v) => valid_value(v),
+        Value::Struct(fs) => fs.iter().all(valid_value),
+        Value::Nested(xs) => valid(x),
+        Value::Reversed(v) => valid_value(v),
     }
 }
