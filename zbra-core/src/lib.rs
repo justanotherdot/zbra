@@ -1,3 +1,7 @@
+extern crate bstr;
+
+pub mod table;
+
 #[cfg(test)]
 mod tests {
     #[test]

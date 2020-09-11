@@ -1,0 +1,8 @@
+steps:
+  - label: "Rust: stable"
+    command:
+      - "cargo test"
+
+  - label: "Rust: nightly"
+    command:
+      - "cargo test"

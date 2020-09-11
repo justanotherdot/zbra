@@ -1,0 +1,13 @@
+[workspace]
+members = [
+  "zbra-cli",
+  "zbra-core",
+]
+
+[profile.release]
+lto = false
+panic = "abort"
+
+[profile.bench]
+lto = false
+panic = "abort"
