@@ -74,5 +74,71 @@ impl Display for SchemaError {
 
 impl Display for SchemaUnionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        SchemaUnionError::SchemaUnionMapKeyNotAllowed(x, y) =>
+            write!(f, "Cannot union tables with different map keys, it could invalidate the ordering invariant:{} {}", pp_field("first", x), pp_field("second", y)),
+        SchemaUnionError::SchemaUnionDefaultNotAllowed(Field(name, value)) =>
+            write!(f, "Schema did not allow defaulting of struct field:{}", pp_field(name.name, value)),
+        SchemaUnionError::SchemaUnionFailedLookupInternalError(Field(name, value)) =>
+            write!(f, "This should not have happened, please report an issue. Internal error when trying to union struct field:{}", pp_field(name.name, value)),
+        SchemaUnionError::SchemaUnionTableMismatch(x, y) =>
+            write!(f, "Cannot union tables with incompatible schemas:{}{}", pp_field("first", x), pp_field("second", y)),
+        SchemaUnionError::SchemaUnionColumnMismatch(x, y) =>
+            write!(f, "Cannot union columns with incompatible schemas:{}{}", pp_field("first", x), pp_field("second", y)),
     }
+}
+
+fn pp_field<A: Debug>(name: String, x: A) -> String {
+    format!("\n\n {} ={}", pp_prefix("\n    ", x))
+}
+
+fn pp_prefix<A: Debug>(prefix: String, x: A) -> String {
+    format!(format!("{}", x).lines().into_iter().map(|l| format!("{}{}", prefix, l)).collect::Vec<String>().join(""))
+}
+
+fn false() -> Variant<Column> {
+    Variant("false", Unit)
+}
+
+fn true() -> Variant<Column> {
+    Variant("true", Unit)
+}
+
+fn bool(def: Default) -> Column {
+    Enum(def, vec![false, true])
+}
+
+fn none() -> Variant<Column> {
+    Variant("none", Unit)
+}
+
+fn some(c: Column) -> Variant<Column> {
+    Variant("some", c)
+}
+
+fn option(def: Default, c: Column) -> Column {
+    Enum(def, vec![none, some]);
+}
+
+fn left(c: Column) -> Variant<Column> {
+    Variant("left", c)
+}
+
+fn right(c: Column) -> Variant<Column> {
+    Variant("right", c)
+}
+
+fn either(def: Default, l: Column, r: Column) -> Column {
+    Enum(def, vec![l, r]);
+}
+
+fn first(c: column) -> Field<Column> {
+    Field("first", c)
+}
+
+fn second(c: Column) -> Field<Column> {
+    Field("second", c)
+}
+
+fn pair(def: Default, x: Column, y: Column) -> Column {
+    Struct(def, vec![first(x), second(y)])
 }
