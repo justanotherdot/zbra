@@ -1,4 +1,4 @@
-#[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone, Hash)]
 pub struct FieldName(String);
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Clone)]
