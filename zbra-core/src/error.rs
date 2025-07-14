@@ -90,7 +90,11 @@ impl fmt::Display for SchemaError {
                 write!(f, "Missing required field: {}", field)
             }
             SchemaError::IncompatibleSchema { source, target } => {
-                write!(f, "Incompatible schemas: cannot convert from {} to {}", source, target)
+                write!(
+                    f,
+                    "Incompatible schemas: cannot convert from {} to {}",
+                    source, target
+                )
             }
             SchemaError::InvalidEncoding(encoding) => {
                 write!(f, "Invalid encoding: {}", encoding)
@@ -122,7 +126,11 @@ impl fmt::Display for StripedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StripedError::ColumnMismatch { expected, actual } => {
-                write!(f, "Column count mismatch: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Column count mismatch: expected {}, got {}",
+                    expected, actual
+                )
             }
             StripedError::InvalidColumnType(type_name) => {
                 write!(f, "Invalid column type: {}", type_name)
