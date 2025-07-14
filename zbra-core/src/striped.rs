@@ -285,6 +285,15 @@ impl Column {
                 })
             }
             ValueSchema::Struct { default, fields } => {
+                // Reject empty structs following zebra's approach
+                if fields.is_empty() {
+                    return Err(ConversionError::Schema(
+                        crate::error::SchemaError::UnsupportedType(
+                            "Empty structs are not supported".to_string(),
+                        ),
+                    ));
+                }
+
                 let mut field_columns = Vec::new();
 
                 for field_schema in fields {
@@ -376,9 +385,11 @@ impl Column {
                     variants: variant_columns,
                 })
             }
-            ValueSchema::Nested { table: _ } => {
+            ValueSchema::Nested {
+                table: table_schema,
+            } => {
                 let mut lengths = Vec::new();
-                let mut all_tables = Vec::new();
+                let mut all_logical_tables = Vec::new();
 
                 for value in values {
                     match value {
@@ -386,17 +397,15 @@ impl Column {
                             match table_value.as_ref() {
                                 LogicalTable::Array(arr) => {
                                     lengths.push(arr.len());
-                                    all_tables.extend(arr.clone());
                                 }
                                 LogicalTable::Map(pairs) => {
                                     lengths.push(pairs.len());
-                                    // TODO: handle nested maps properly
                                 }
-                                LogicalTable::Binary(_) => {
-                                    lengths.push(1);
-                                    // TODO: handle nested binary properly
+                                LogicalTable::Binary(data) => {
+                                    lengths.push(data.len());
                                 }
                             }
+                            all_logical_tables.push(table_value.as_ref().clone());
                         }
                         _ => {
                             return Err(ConversionError::Schema(
@@ -409,13 +418,69 @@ impl Column {
                     }
                 }
 
-                // TODO: implement proper nested table conversion
-                let nested_table = Table::Array {
-                    default: Default::Allow,
-                    column: Box::new(Column::Unit {
-                        count: all_tables.len(),
-                    }),
+                // For nested tables, we need to preserve the individual tables
+                // Create a single logical table that contains all nested tables concatenated
+                let merged_table = match table_schema.as_ref() {
+                    TableSchema::Binary { .. } => {
+                        // For binary tables, concatenate all binary data
+                        let mut all_data = Vec::new();
+                        for table in &all_logical_tables {
+                            match table {
+                                LogicalTable::Binary(data) => all_data.extend_from_slice(data),
+                                _ => {
+                                    return Err(ConversionError::Schema(
+                                        crate::error::SchemaError::TypeMismatch {
+                                            expected: "binary table".to_string(),
+                                            actual: format!("{:?}", table),
+                                        },
+                                    ))
+                                }
+                            }
+                        }
+                        LogicalTable::Binary(all_data)
+                    }
+                    TableSchema::Array { .. } => {
+                        // For array tables, concatenate all array elements
+                        let mut all_elements = Vec::new();
+                        for table in &all_logical_tables {
+                            match table {
+                                LogicalTable::Array(elements) => {
+                                    all_elements.extend_from_slice(elements)
+                                }
+                                _ => {
+                                    return Err(ConversionError::Schema(
+                                        crate::error::SchemaError::TypeMismatch {
+                                            expected: "array table".to_string(),
+                                            actual: format!("{:?}", table),
+                                        },
+                                    ))
+                                }
+                            }
+                        }
+                        LogicalTable::Array(all_elements)
+                    }
+                    TableSchema::Map { .. } => {
+                        // For map tables, concatenate all map pairs
+                        let mut all_pairs = Vec::new();
+                        for table in &all_logical_tables {
+                            match table {
+                                LogicalTable::Map(pairs) => all_pairs.extend_from_slice(pairs),
+                                _ => {
+                                    return Err(ConversionError::Schema(
+                                        crate::error::SchemaError::TypeMismatch {
+                                            expected: "map table".to_string(),
+                                            actual: format!("{:?}", table),
+                                        },
+                                    ))
+                                }
+                            }
+                        }
+                        LogicalTable::Map(all_pairs)
+                    }
                 };
+
+                // Convert the merged logical table to striped format
+                let nested_table = Table::from_logical(table_schema, &merged_table)?;
 
                 Ok(Column::Nested {
                     lengths,
@@ -423,7 +488,25 @@ impl Column {
                 })
             }
             ValueSchema::Reversed { inner } => {
-                let inner_column = Column::from_values(inner, values)?;
+                // Unwrap all reversed values to get the inner values
+                let mut inner_values = Vec::new();
+                for value in values {
+                    match value {
+                        Value::Reversed(inner_value) => {
+                            inner_values.push(inner_value.as_ref().clone());
+                        }
+                        _ => {
+                            return Err(ConversionError::Schema(
+                                crate::error::SchemaError::TypeMismatch {
+                                    expected: "reversed".to_string(),
+                                    actual: format!("{:?}", value),
+                                },
+                            ))
+                        }
+                    }
+                }
+
+                let inner_column = Column::from_values(inner, &inner_values)?;
                 Ok(Column::Reversed {
                     inner: Box::new(inner_column),
                 })
@@ -455,6 +538,15 @@ impl Column {
                     offset += length;
                 }
 
+                // Ensure we consumed exactly all the data
+                if offset != data.len() {
+                    return Err(ConversionError::Striped(
+                        StripedError::VectorOperationFailed(
+                            "Binary data length mismatch".to_string(),
+                        ),
+                    ));
+                }
+
                 Ok(result)
             }
             Column::Array {
@@ -478,12 +570,22 @@ impl Column {
                     offset += length;
                 }
 
+                // Ensure we consumed exactly all the element values
+                if offset != element_values.len() {
+                    return Err(ConversionError::Striped(
+                        StripedError::VectorOperationFailed(
+                            "Array element length mismatch".to_string(),
+                        ),
+                    ));
+                }
+
                 Ok(result)
             }
             Column::Struct { fields, .. } => {
-                if fields.is_empty() {
-                    return Ok(Vec::new());
-                }
+                debug_assert!(
+                    !fields.is_empty(),
+                    "Struct columns must have at least one field"
+                );
 
                 let row_count = fields[0].column.row_count();
                 let mut result = Vec::new();
@@ -513,22 +615,37 @@ impl Column {
                 Ok(result)
             }
             Column::Enum { tags, variants, .. } => {
-                let mut result = Vec::new();
+                // Get values for all variant columns
+                let mut variant_values = Vec::new();
+                for variant in variants {
+                    variant_values.push(variant.column.to_values()?);
+                }
 
-                for &tag in tags {
-                    if let Some(variant) = variants.iter().find(|v| v.tag == tag) {
-                        let variant_values = variant.column.to_values()?;
-                        if variant_values.is_empty() {
-                            result.push(Value::Enum {
-                                tag,
-                                value: Box::new(Value::Unit),
-                            });
+                // Transpose the variant columns (each row becomes a vector of values, one per variant)
+                let row_count = tags.len();
+                let mut transposed_values = Vec::new();
+                for row_idx in 0..row_count {
+                    let mut row_values = Vec::new();
+                    for (variant_idx, _variant) in variants.iter().enumerate() {
+                        let values = &variant_values[variant_idx];
+                        if row_idx < values.len() {
+                            row_values.push(values[row_idx].clone());
                         } else {
-                            result.push(Value::Enum {
-                                tag,
-                                value: Box::new(variant_values[0].clone()),
-                            });
+                            // Use default value for this variant if no value exists
+                            row_values.push(Value::Unit); // TODO: use proper default
                         }
+                    }
+                    transposed_values.push(row_values);
+                }
+
+                let mut result = Vec::new();
+                for (row_idx, &tag) in tags.iter().enumerate() {
+                    if let Some(variant_idx) = variants.iter().position(|v| v.tag == tag) {
+                        let row_values = &transposed_values[row_idx];
+                        result.push(Value::Enum {
+                            tag,
+                            value: Box::new(row_values[variant_idx].clone()),
+                        });
                     } else {
                         return Err(ConversionError::Schema(
                             crate::error::SchemaError::UnsupportedType(format!("enum tag {}", tag)),
@@ -542,9 +659,51 @@ impl Column {
                 let table_logical = table.to_logical()?;
                 let mut result = Vec::new();
 
-                for &_length in lengths {
-                    // TODO: implement proper nested table reconstruction
-                    result.push(Value::Nested(Box::new(table_logical.clone())));
+                // Split the table according to the lengths to reconstruct individual nested tables
+                let mut offset = 0;
+                for &length in lengths {
+                    let nested_table = match &table_logical {
+                        LogicalTable::Binary(data) => {
+                            let end_offset = offset + length;
+                            if end_offset > data.len() {
+                                return Err(ConversionError::Striped(
+                                    StripedError::VectorOperationFailed(
+                                        "Binary nested table length mismatch".to_string(),
+                                    ),
+                                ));
+                            }
+                            let slice = data[offset..end_offset].to_vec();
+                            offset = end_offset;
+                            LogicalTable::Binary(slice)
+                        }
+                        LogicalTable::Array(elements) => {
+                            let end_offset = offset + length;
+                            if end_offset > elements.len() {
+                                return Err(ConversionError::Striped(
+                                    StripedError::VectorOperationFailed(
+                                        "Array nested table length mismatch".to_string(),
+                                    ),
+                                ));
+                            }
+                            let slice = elements[offset..end_offset].to_vec();
+                            offset = end_offset;
+                            LogicalTable::Array(slice)
+                        }
+                        LogicalTable::Map(pairs) => {
+                            let end_offset = offset + length;
+                            if end_offset > pairs.len() {
+                                return Err(ConversionError::Striped(
+                                    StripedError::VectorOperationFailed(
+                                        "Map nested table length mismatch".to_string(),
+                                    ),
+                                ));
+                            }
+                            let slice = pairs[offset..end_offset].to_vec();
+                            offset = end_offset;
+                            LogicalTable::Map(slice)
+                        }
+                    };
+                    result.push(Value::Nested(Box::new(nested_table)));
                 }
 
                 Ok(result)
@@ -567,7 +726,13 @@ impl Column {
             Column::Double { values, .. } => values.len(),
             Column::Binary { lengths, .. } => lengths.len(),
             Column::Array { lengths, .. } => lengths.len(),
-            Column::Struct { fields, .. } => fields.first().map_or(0, |f| f.column.row_count()),
+            Column::Struct { fields, .. } => {
+                debug_assert!(
+                    !fields.is_empty(),
+                    "Struct columns must have at least one field"
+                );
+                fields[0].column.row_count()
+            }
             Column::Enum { tags, .. } => tags.len(),
             Column::Nested { lengths, .. } => lengths.len(),
             Column::Reversed { inner } => inner.row_count(),
