@@ -83,6 +83,84 @@ enum SimdLevel {
 - Richer type system (full sum types)
 - Configurable memory/performance tradeoffs
 
+### Compression Algorithm Modernization
+
+**Current Zbra Pipeline (2015-era):**
+1. Frame-of-reference encoding (offset by midpoint)
+2. Zig-zag encoding (signed to unsigned conversion)
+3. BP64 bit packing (64-element chunks with minimum bits)
+4. Snappy compression (for string/binary data)
+
+**Modern 2025 Alternatives:**
+
+**Enhanced Encoding:**
+- **Daniel Lemire's FastPFOR** - Successor to BP64 with better performance
+- **Stream VByte** - More efficient than zig-zag for small integers
+- **Delta encoding + Delta-of-delta** - Optimized for time series patterns
+- **Dictionary encoding** - For repeated string/categorical values
+
+**Advanced Compression:**
+- **Zstd** - Better compression ratios than Snappy, similar speed
+- **LZ4** - Ultra-fast decompression for hot data
+- **Brotli** - Maximum compression for cold storage
+
+**Potential Dependencies:**
+```toml
+# Modern compression libraries
+snap = "1.1"           # Snappy (compatibility)
+zstd = "0.13"          # Modern general compression  
+lz4_flex = "0.11"      # Ultra-fast decompression
+brotli = "3.4"         # Maximum compression
+
+# Modern encoding algorithms
+fastpfor = "0.1"       # Lemire's integer encoding
+stream-vbyte = "0.1"   # Modern variable-byte encoding
+roaring = "0.10"       # Compressed bitmaps
+```
+
+**Implementation Strategy:**
+- Maintain compatibility with original Zebra format (zbra is the successor)
+- Add modern algorithms as opt-in alternatives
+- Benchmark against original implementation
+- Support hybrid compression (different algorithms per column type)
+
+### Parsing Strategy and Performance
+
+**Zbra's Zero-Parse Architecture:**
+
+**Primary Data Path (Performance Critical):**
+```
+Binary → Striped → Analytics
+```
+- Binary format designed for DMA-like transfers
+- Direct memory mapping with minimal processing
+- Header contains schema, data blocks are raw compressed bytes
+- No JSON parsing in hot paths - just decompression
+
+**Secondary Tooling Path (Human Interface):**
+```
+JSON Schema → Logical → Striped
+JSON Text Format → Logical → Striped  
+```
+- JSON used only for schema definitions (.zschema files)
+- Text format (.ztxt) for debugging and human readability
+- Logical layer is restructuring/validation, not primary data representation
+
+**Modern JSON Parsing Opportunities (Lemire's simdjson):**
+
+**Where it COULD help:**
+- Schema parsing (.zschema files) - one-time cost
+- Text format import (.ztxt files) - tooling/debugging
+- Metadata and configuration parsing
+- CLI tool operations
+
+**Where it's NOT needed:**
+- Primary data path (Binary ↔ Striped conversions)
+- Hot performance paths (compression/decompression)
+- Runtime data operations
+
+**Key Insight:** Zbra optimizes for maximum DMA-like transfers in the performance path, using JSON only for human-facing tooling. SIMD JSON parsing would improve developer experience but not core analytical performance.
+
 ### Future Research Areas
 
 1. **SIMD Compression Pipeline**
