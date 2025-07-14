@@ -10,4 +10,3 @@ panic = "abort"
 
 [profile.bench]
 lto = false
-panic = "abort"

@@ -8,3 +8,6 @@ edition = "2018"
 
 [dependencies]
 bstr = "0.2.13"
+
+[dev-dependencies]
+proptest = "1.0"
