@@ -1,0 +1,22 @@
+#!/bin/sh -eu
+
+# Build CLI
+cargo build --release --bin zbra-cli
+
+# Set up playground
+mkdir -p playground
+cd playground
+
+# Create examples
+../target/release/zbra-cli example
+
+# Show info
+../target/release/zbra-cli info people.json
+../target/release/zbra-cli info numbers.json
+
+# Convert to striped
+../target/release/zbra-cli convert --input people.json --output people.striped --to striped
+../target/release/zbra-cli convert --input numbers.json --output numbers.striped --to striped
+
+# List results
+ls -la
