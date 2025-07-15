@@ -56,6 +56,8 @@ pub enum BinaryError {
     InvalidEncodingTag(u8),
     InvalidIntEncodingTag(u8),
     InvalidBinaryEncodingTag(u8),
+    CompressionError(String),
+    DecompressionError(String),
     IoError(std::io::Error),
 }
 

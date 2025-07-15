@@ -211,6 +211,169 @@ JSON Text Format → Logical → Striped
    - NUMA-aware allocation
    - SIMD-optimized memory pools
 
+### Advanced Compression Architecture
+
+#### Per-Column Compression (Following Apache Arrow)
+
+**Current State:**
+- Single compression algorithm applied to entire dataset
+- Basic Zstd compression with configurable level
+
+**FUTURE Enhancement - Per-Column Compression:**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnCompressionConfig {
+    /// Column name or index
+    pub column_id: String,
+    /// Compression algorithm for this specific column
+    pub algorithm: CompressionAlgorithm,
+    /// Column-specific compression parameters
+    pub params: CompressionParams,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionParams {
+    /// Dictionary encoding threshold (repeated values)
+    pub dict_threshold: f32,
+    /// Run-length encoding threshold (consecutive values)
+    pub rle_threshold: f32,
+    /// Bit-packing optimization for integers
+    pub bit_packing: bool,
+}
+```
+
+**Column-Specific Optimization Strategies:**
+- **Integer columns**: Frame-of-reference + zig-zag + BP64 + Zstd
+- **String columns**: Dictionary encoding + Zstd
+- **Categorical columns**: Dictionary encoding + bit-packing
+- **Time series**: Delta encoding + delta-of-delta + Zstd
+- **Binary data**: Direct Zstd or LZ4 for hot paths
+
+**Apache Arrow Compatibility:**
+Arrow supports very granular compression control at the column level, allowing different algorithms per column type. This approach would make zbra compatible with Arrow's compression model while maintaining zbra's superior compression ratios.
+
+#### Per-Chunk Adaptive Compression
+
+**Key Insight:** Different data chunks within the same column may benefit from different compression strategies.
+
+**FUTURE Enhancement - Per-Chunk Compression:**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkCompressionMetadata {
+    /// Chunk identifier
+    pub chunk_id: u32,
+    /// Detected data pattern
+    pub pattern: DataPattern,
+    /// Chosen compression algorithm
+    pub algorithm: CompressionAlgorithm,
+    /// Compression ratio achieved
+    pub ratio: f32,
+    /// Decompression speed hint
+    pub speed_hint: SpeedHint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DataPattern {
+    /// Mostly sequential integers
+    Sequential,
+    /// High entropy random data
+    Random,
+    /// Repeated values
+    Repetitive,
+    /// Sparse data with many nulls
+    Sparse,
+    /// Time series with trends
+    TimeSeries,
+}
+```
+
+**Adaptive Algorithm Selection:**
+- **Sequential data**: Frame-of-reference + bit-packing
+- **Random data**: Direct Zstd compression
+- **Repetitive data**: Run-length encoding + dictionary
+- **Sparse data**: Bitmap compression + value arrays
+- **Time series**: Delta-of-delta + specialized encoding
+
+**Implementation Strategy:**
+1. **Analysis Phase**: Sample first N values to detect pattern
+2. **Algorithm Selection**: Choose optimal compression based on pattern
+3. **Metadata Storage**: Store compression choice in chunk header
+4. **Decompression**: Use stored metadata to select decompression algorithm
+
+#### Runtime Compression Configuration
+
+**FUTURE Enhancement - Dynamic Compression:**
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeCompressionConfig {
+    /// Global fallback compression
+    pub default: CompressionAlgorithm,
+    /// Per-column overrides
+    pub column_configs: Vec<ColumnCompressionConfig>,
+    /// Enable adaptive per-chunk compression
+    pub adaptive_chunks: bool,
+    /// Performance vs compression trade-off
+    pub optimization_target: OptimizationTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OptimizationTarget {
+    /// Maximize compression ratio
+    MinimizeSpace,
+    /// Maximize decompression speed
+    MaximizeSpeed,
+    /// Balance compression and speed
+    Balanced,
+}
+```
+
+**Configuration Sources:**
+- **File headers**: Embedded compression metadata
+- **Runtime detection**: Automatic pattern recognition
+- **User overrides**: API-specified compression preferences
+- **Profile-guided**: Historical performance data
+
+#### Memory and Performance Implications
+
+**Memory Efficiency:**
+- **Per-column**: Allows optimal memory usage per data type
+- **Per-chunk**: Enables streaming with bounded memory
+- **Adaptive**: Reduces memory pressure through better compression
+
+**Performance Characteristics:**
+- **Compression time**: Slightly higher due to analysis overhead
+- **Decompression speed**: Potentially faster with algorithm specialization
+- **Storage efficiency**: Significantly better compression ratios
+- **Query performance**: Faster due to reduced I/O from better compression
+
+**SIMD Optimization Opportunities:**
+- **Pattern detection**: Vectorized data analysis
+- **Algorithm selection**: SIMD-accelerated heuristics
+- **Compression pipelines**: Vectorized encoding/decoding
+- **Memory operations**: SIMD-optimized data movement
+
+#### Production Implementation Path
+
+**Phase 1: Per-Column Compression**
+- Implement column-specific compression algorithms
+- Add compression metadata to binary format headers
+- Maintain backward compatibility with current format
+
+**Phase 2: Adaptive Chunks**
+- Add chunk-level compression analysis
+- Implement pattern detection algorithms
+- Add chunk compression metadata
+
+**Phase 3: Runtime Configuration**
+- Implement dynamic compression selection
+- Add performance profiling and feedback
+- Optimize for different workload patterns
+
+**Phase 4: Advanced Features**
+- Cross-column compression (shared dictionaries)
+- Predictive compression based on schema
+- Integration with query engines for optimal decompression
+
 ### Performance Measurement Strategy
 
 1. **Establish baselines** for current scalar implementations
