@@ -205,6 +205,12 @@ impl fmt::Display for BinaryError {
             BinaryError::IoError(err) => {
                 write!(f, "I/O error: {}", err)
             }
+            BinaryError::CompressionError(msg) => {
+                write!(f, "Compression error: {}", msg)
+            }
+            BinaryError::DecompressionError(msg) => {
+                write!(f, "Decompression error: {}", msg)
+            }
         }
     }
 }

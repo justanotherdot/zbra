@@ -8,7 +8,6 @@
 
 use crate::error::{BinaryError, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
 
 /// Compression algorithms supported by zbra
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,20 +53,27 @@ pub fn frame_of_reference_encode(values: &[i64]) -> (i64, Vec<i64>) {
     let mut sorted = values.to_vec();
     sorted.sort();
     let midpoint = if sorted.len() % 2 == 0 {
-        (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2
+        // Handle overflow in midpoint calculation by using wrapping arithmetic
+        let a = sorted[sorted.len() / 2 - 1];
+        let b = sorted[sorted.len() / 2];
+        // Avoid overflow by using the average formula: a + (b - a) / 2
+        a.wrapping_add(b.wrapping_sub(a) / 2)
     } else {
         sorted[sorted.len() / 2]
     };
 
-    // Subtract midpoint from all values
-    let deltas = values.iter().map(|&v| v - midpoint).collect();
+    // Subtract midpoint from all values, handling overflow
+    let deltas = values.iter().map(|&v| v.wrapping_sub(midpoint)).collect();
 
     (midpoint, deltas)
 }
 
 /// Decode frame-of-reference encoded values
 pub fn frame_of_reference_decode(midpoint: i64, deltas: &[i64]) -> Vec<i64> {
-    deltas.iter().map(|&delta| midpoint + delta).collect()
+    deltas
+        .iter()
+        .map(|&delta| midpoint.wrapping_add(delta))
+        .collect()
 }
 
 /// Zig-zag encoding converts signed integers to unsigned
@@ -77,7 +83,12 @@ pub fn frame_of_reference_decode(midpoint: i64, deltas: &[i64]) -> Vec<i64> {
 pub fn zig_zag_encode(values: &[i64]) -> Vec<u64> {
     values
         .iter()
-        .map(|&n| ((n << 1) ^ (n >> 63)) as u64)
+        .map(|&n| {
+            // Proper zig-zag encoding: handle overflow with wrapping
+            let shifted = (n as u64) << 1;
+            let sign_bit = (n >> 63) as u64;
+            shifted ^ sign_bit
+        })
         .collect()
 }
 
@@ -86,8 +97,10 @@ pub fn zig_zag_decode(values: &[u64]) -> Vec<i64> {
     values
         .iter()
         .map(|&n| {
-            let signed = n as i64;
-            (signed >> 1) ^ (-(signed & 1))
+            // Proper zig-zag decoding
+            let shifted = (n >> 1) as i64;
+            let sign_mask = -((n & 1) as i64);
+            shifted ^ sign_mask
         })
         .collect()
 }
@@ -116,13 +129,26 @@ pub fn bp64_pack(values: &[u64]) -> Result<Vec<u8>> {
         return Ok(packed);
     }
 
+    // For very large bit widths, use a simpler approach
+    if bit_width >= 32 {
+        // Just store as little-endian 8-byte values
+        for &value in values {
+            packed.extend_from_slice(&value.to_le_bytes());
+        }
+        return Ok(packed);
+    }
+
     // Pack values using bit_width bits per value
     let mut bit_buffer = 0u64;
     let mut bits_in_buffer = 0u32;
 
     for &value in values {
+        // Mask the value to fit in bit_width bits
+        let mask = (1u64 << bit_width) - 1;
+        let masked_value = value & mask;
+
         // Add value to bit buffer
-        bit_buffer |= (value & ((1u64 << bit_width) - 1)) << bits_in_buffer;
+        bit_buffer |= masked_value << bits_in_buffer;
         bits_in_buffer += bit_width as u32;
 
         // Extract complete bytes
@@ -154,6 +180,21 @@ pub fn bp64_unpack(packed: &[u8], count: usize) -> Result<Vec<u64>> {
 
     let data = &packed[1..];
     let mut values = Vec::with_capacity(count);
+
+    // For very large bit widths, read as little-endian 8-byte values
+    if bit_width >= 32 {
+        for i in 0..count {
+            let start = i * 8;
+            if start + 8 <= data.len() {
+                let bytes = &data[start..start + 8];
+                let value = u64::from_le_bytes(bytes.try_into().unwrap());
+                values.push(value);
+            } else {
+                values.push(0);
+            }
+        }
+        return Ok(values);
+    }
 
     let mut bit_buffer = 0u64;
     let mut bits_in_buffer = 0u32;

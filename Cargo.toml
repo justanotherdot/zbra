@@ -5,9 +5,11 @@ members = [
 ]
 resolver = "2"
 
+
 [profile.release]
 lto = false
 panic = "abort"
 
 [profile.bench]
 lto = false
+

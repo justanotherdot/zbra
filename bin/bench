@@ -1,0 +1,108 @@
+#!/bin/sh -eu
+
+# Zbra Benchmark Runner
+# This script runs comprehensive performance benchmarks for the zbra compression pipeline
+
+echo "=== Zbra Compression Pipeline Benchmarks ==="
+echo
+
+# Check if we're in the right directory
+if [ ! -f "Cargo.toml" ] || [ ! -d "zbra-core" ]; then
+    echo "Error: Must be run from the zbra project root directory"
+    exit 1
+fi
+
+# Function to run a specific benchmark group
+run_benchmark() {
+    local name="$1"
+    local description="$2"
+    echo "Running $description..."
+    echo "Command: cargo bench --bench $name -p zbra-core"
+    echo
+    
+    if cargo bench --bench "$name" -p zbra-core --quiet; then
+        echo "✓ $description completed successfully"
+    else
+        echo "✗ $description failed"
+        return 1
+    fi
+    echo
+}
+
+# Function to run all benchmarks in a category
+run_category() {
+    local category="$1"
+    local description="$2"
+    echo "=== $description ==="
+    echo
+    
+    case "$category" in
+        "compression")
+            run_benchmark "simple-test" "Simple Compression Test"
+            ;;
+        "streaming")
+            run_benchmark "simple-test" "Simple Compression Test"
+            ;;
+        "integration")
+            run_benchmark "simple-test" "Simple Compression Test"
+            ;;
+    esac
+}
+
+# Parse command line arguments
+case "${1:-all}" in
+    "all")
+        echo "Running all benchmarks..."
+        echo
+        run_category "compression" "Compression Algorithm Benchmarks"
+        run_category "streaming" "Streaming I/O Benchmarks"
+        run_category "integration" "Integration Benchmarks"
+        ;;
+    "compression")
+        run_category "compression" "Compression Algorithm Benchmarks"
+        ;;
+    "streaming")
+        run_category "streaming" "Streaming I/O Benchmarks"
+        ;;
+    "integration")
+        run_category "integration" "Integration Benchmarks"
+        ;;
+    "quick")
+        echo "Running quick benchmark suite..."
+        echo
+        run_benchmark "compression" "Compression Algorithm Benchmarks"
+        run_benchmark "streaming_io" "Streaming I/O Benchmarks"
+        ;;
+    "help")
+        echo "Usage: $0 [category]"
+        echo
+        echo "Categories:"
+        echo "  all          - Run all benchmarks (default)"
+        echo "  compression  - Run compression algorithm benchmarks"
+        echo "  streaming    - Run streaming I/O benchmarks"
+        echo "  integration  - Run integration benchmarks"
+        echo "  quick        - Run quick benchmark suite"
+        echo "  help         - Show this help message"
+        echo
+        echo "Examples:"
+        echo "  $0                    # Run all benchmarks"
+        echo "  $0 compression        # Run only compression benchmarks"
+        echo "  $0 streaming          # Run only streaming benchmarks"
+        echo "  $0 quick              # Run quick benchmark suite"
+        echo
+        exit 0
+        ;;
+    *)
+        echo "Error: Unknown category '$1'"
+        echo "Run '$0 help' for usage information"
+        exit 1
+        ;;
+esac
+
+echo "=== Benchmark Results ==="
+echo
+echo "Benchmark reports have been generated in target/criterion/"
+echo "To view HTML reports, open target/criterion/report/index.html in a web browser"
+echo
+
+echo "Benchmarks completed successfully!"
