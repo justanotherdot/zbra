@@ -28,15 +28,29 @@ pub struct Header {
 /// File layout:
 /// ```text
 /// [Magic Number: 16 bytes] "||_ZBRA||00001||"
+/// [Header Length: 4 bytes] total header size (little-endian u32)
+/// [Header CRC32: 4 bytes] header checksum (little-endian u32)
 /// [Schema Size: 4 bytes] uncompressed_size (little-endian u32)
 /// [Schema Size: 4 bytes] compressed_size (little-endian u32)  
 /// [Schema Data: N bytes] JSON-encoded TableSchema (compressed with Zstd)
 /// [Compression Config Size: 4 bytes] uncompressed_size (little-endian u32)
 /// [Compression Config Size: 4 bytes] compressed_size (little-endian u32)
 /// [Compression Config Data: N bytes] JSON-encoded CompressionConfig (compressed with Zstd)
+/// [Reserved: 32 bytes] reserved for future metadata (zeros)
 /// [Block Count: 4 bytes] number of blocks (little-endian u32)
 /// [Block 0: Variable] row_count + striped table data
 /// [Block 1: Variable] ...
+/// ```
+///
+/// FUTURE: Consider consolidating schema + compression into single header block:
+/// ```text
+/// [Magic Number: 16 bytes] "||_ZBRA||00002||"
+/// [Header Length: 4 bytes] total header size
+/// [Header CRC32: 4 bytes] header checksum
+/// [Header Data: N bytes] protobuf-encoded unified header
+/// [Reserved: 64 bytes] reserved for future extensions
+/// [Block Count: 4 bytes] number of blocks
+/// [Block Data: Variable] compressed blocks
 /// ```
 #[derive(Debug, Clone)]
 pub struct BinaryFile {
