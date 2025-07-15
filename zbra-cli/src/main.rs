@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use zbra_core::binary;
 use zbra_core::data::{BinaryEncoding, Default, Encoding, Field, IntEncoding, Table, Value};
-use zbra_core::logical::{FieldSchema, TableSchema, ValueSchema};
+use zbra_core::logical::{FieldSchema, TableSchema, ValueSchema, VariantSchema};
 use zbra_core::striped;
 
 #[derive(Parser)]
@@ -29,11 +30,11 @@ enum Commands {
         #[arg(short, long)]
         output: PathBuf,
 
-        /// Input format (json, logical)
+        /// Input format (json, logical, binary)
         #[arg(long, default_value = "json")]
         from: String,
 
-        /// Output format (json, logical, striped)
+        /// Output format (json, logical, striped, binary)
         #[arg(long, default_value = "striped")]
         to: String,
     },
@@ -72,7 +73,7 @@ struct JsonData {
 struct JsonSchema {
     #[serde(rename = "type")]
     schema_type: String,
-    default: String,
+    default: Option<String>,
     encoding: Option<String>,
     element: Option<Box<JsonSchema>>,
     fields: Option<Vec<JsonField>>,
@@ -159,7 +160,7 @@ fn convert_file(input: &PathBuf, output: &PathBuf, from: &str, to: &str) -> Resu
 
             let output_data = serde_json::json!({
                 "schema": schema_to_json(&schema),
-                "striped": format!("{:?}", striped_table),
+                "striped": striped_table_to_json(&striped_table),
                 "row_count": striped_table.row_count()
             });
 
@@ -168,6 +169,76 @@ fn convert_file(input: &PathBuf, output: &PathBuf, from: &str, to: &str) -> Resu
                 "Converted to striped format with {} rows",
                 striped_table.row_count()
             );
+        }
+        ("json", "binary") | ("logical", "binary") | ("striped", "binary") => {
+            let (schema, striped_table) = match from {
+                "json" | "logical" => {
+                    let json_content = fs::read_to_string(input)?;
+                    let json_data: JsonData = serde_json::from_str(&json_content)?;
+
+                    let schema = convert_json_schema_to_table_schema(&json_data.schema)?;
+                    let logical_data = convert_json_value_to_table(&json_data.data)?;
+                    let striped_table = striped::Table::from_logical(&schema, &logical_data)?;
+
+                    (schema, striped_table)
+                }
+                "striped" => {
+                    let json_content = fs::read_to_string(input)?;
+                    let json_data: serde_json::Value = serde_json::from_str(&json_content)?;
+
+                    // For striped format, we need to infer the schema from the striped data
+                    let striped_table = json_to_striped_table(&json_data["striped"])?;
+                    let schema = infer_schema_from_striped_table(&striped_table)?;
+
+                    (schema, striped_table)
+                }
+                _ => unreachable!(),
+            };
+
+            // Create binary file
+            let row_count = striped_table.row_count();
+            let binary_file = binary::BinaryFile::new(schema, striped_table);
+
+            // Write to output file
+            let mut file = fs::File::create(output)?;
+            binary_file.write_to(&mut file)?;
+
+            println!("Converted to binary format with {} rows", row_count);
+        }
+        ("binary", "json") | ("binary", "logical") | ("binary", "striped") => {
+            // Read binary file
+            let mut file = fs::File::open(input)?;
+            let binary_file = binary::BinaryFile::read_from(&mut file)?;
+
+            let schema = &binary_file.header.schema;
+            let striped_table = &binary_file.blocks[0].table; // For now, assume single block
+
+            match to {
+                "json" | "logical" => {
+                    let logical_data = striped_table.to_logical()?;
+                    let output_data = serde_json::json!({
+                        "schema": schema_to_json(schema),
+                        "data": table_to_json(&logical_data)
+                    });
+
+                    fs::write(output, serde_json::to_string_pretty(&output_data)?)?;
+                    println!("Converted from binary to logical format");
+                }
+                "striped" => {
+                    let output_data = serde_json::json!({
+                        "schema": schema_to_json(schema),
+                        "striped": striped_table_to_json(striped_table),
+                        "row_count": striped_table.row_count()
+                    });
+
+                    fs::write(output, serde_json::to_string_pretty(&output_data)?)?;
+                    println!(
+                        "Converted from binary to striped format with {} rows",
+                        striped_table.row_count()
+                    );
+                }
+                _ => unreachable!(),
+            }
         }
         _ => {
             return Err(eyre::eyre!("Unsupported conversion: {} to {}", from, to));
@@ -180,38 +251,68 @@ fn convert_file(input: &PathBuf, output: &PathBuf, from: &str, to: &str) -> Resu
 fn show_info(file: &PathBuf) -> Result<()> {
     println!("File info for: {}", file.display());
 
-    let content = fs::read_to_string(file)?;
-    let json_data: JsonData = serde_json::from_str(&content)?;
+    // Check if this is a binary file (ends with .zbra)
+    if file.extension().and_then(|s| s.to_str()) == Some("zbra") {
+        // Handle binary file
+        let mut file_handle = fs::File::open(file)?;
+        let binary_file = binary::BinaryFile::read_from(&mut file_handle)?;
 
-    println!("Schema type: {}", json_data.schema.schema_type);
-    println!("Schema default: {}", json_data.schema.default);
+        let schema = &binary_file.header.schema;
+        let total_rows: usize = binary_file
+            .blocks
+            .iter()
+            .map(|b| b.row_count as usize)
+            .sum();
 
-    let schema = convert_json_schema_to_table_schema(&json_data.schema)?;
-    let logical_data = convert_json_value_to_table(&json_data.data)?;
+        println!("Format: Binary (.zbra)");
+        println!("Schema type: {:?}", schema);
+        println!("Total rows: {}", total_rows);
+        println!("Block count: {}", binary_file.blocks.len());
 
-    // Validate
-    match logical_data.validate_schema(&schema) {
-        Ok(_) => println!("Schema validation: PASS"),
-        Err(e) => println!("Schema validation: FAIL - {}", e),
-    }
-
-    // Show row count
-    let row_count = match &logical_data {
-        Table::Array(values) => values.len(),
-        Table::Map(pairs) => pairs.len(),
-        Table::Binary(data) => {
-            if data.is_empty() {
-                0
-            } else {
-                1
-            }
+        for (i, block) in binary_file.blocks.iter().enumerate() {
+            println!("Block {}: {} rows", i, block.row_count);
         }
-    };
-    println!("Row count: {}", row_count);
 
-    // Convert to striped and show info
-    let striped_table = striped::Table::from_logical(&schema, &logical_data)?;
-    println!("Striped row count: {}", striped_table.row_count());
+        println!("Schema validation: PASS (binary files are pre-validated)");
+    } else {
+        // Handle JSON file
+        let content = fs::read_to_string(file)?;
+        let json_data: JsonData = serde_json::from_str(&content)?;
+
+        println!("Format: JSON");
+        println!("Schema type: {}", json_data.schema.schema_type);
+        println!(
+            "Schema default: {}",
+            json_data.schema.default.as_deref().unwrap_or("allow")
+        );
+
+        let schema = convert_json_schema_to_table_schema(&json_data.schema)?;
+        let logical_data = convert_json_value_to_table(&json_data.data)?;
+
+        // Validate
+        match logical_data.validate_schema(&schema) {
+            Ok(_) => println!("Schema validation: PASS"),
+            Err(e) => println!("Schema validation: FAIL - {}", e),
+        }
+
+        // Show row count
+        let row_count = match &logical_data {
+            Table::Array(values) => values.len(),
+            Table::Map(pairs) => pairs.len(),
+            Table::Binary(data) => {
+                if data.is_empty() {
+                    0
+                } else {
+                    1
+                }
+            }
+        };
+        println!("Row count: {}", row_count);
+
+        // Convert to striped and show info
+        let striped_table = striped::Table::from_logical(&schema, &logical_data)?;
+        println!("Striped row count: {}", striped_table.row_count());
+    }
 
     Ok(())
 }
@@ -347,7 +448,7 @@ fn validate_data(data_file: &PathBuf, schema_file: &PathBuf) -> Result<()> {
 fn convert_json_schema_to_table_schema(json_schema: &JsonSchema) -> Result<TableSchema> {
     match json_schema.schema_type.as_str() {
         "array" => {
-            let default = parse_default(&json_schema.default)?;
+            let default = parse_default(&json_schema.default.as_deref().unwrap_or("allow"))?;
             let element = json_schema
                 .element
                 .as_ref()
@@ -359,7 +460,7 @@ fn convert_json_schema_to_table_schema(json_schema: &JsonSchema) -> Result<Table
             })
         }
         "binary" => {
-            let default = parse_default(&json_schema.default)?;
+            let default = parse_default(&json_schema.default.as_deref().unwrap_or("allow"))?;
             let encoding = parse_encoding(json_schema.encoding.as_deref().unwrap_or("binary"))?;
             Ok(TableSchema::Binary { default, encoding })
         }
@@ -375,7 +476,7 @@ fn convert_json_schema_to_table_schema(json_schema: &JsonSchema) -> Result<Table
 }
 
 fn convert_json_schema_to_value_schema(json_schema: &JsonSchema) -> Result<ValueSchema> {
-    let default = parse_default(&json_schema.default)?;
+    let default = parse_default(&json_schema.default.as_deref().unwrap_or("allow"))?;
 
     match json_schema.schema_type.as_str() {
         "unit" => Ok(ValueSchema::Unit),
@@ -399,7 +500,7 @@ fn convert_json_schema_to_value_schema(json_schema: &JsonSchema) -> Result<Value
                 element: Box::new(element_schema),
             })
         }
-        "struct" => {
+        "struct" | "complex" => {
             let fields = json_schema
                 .fields
                 .as_ref()
@@ -614,5 +715,506 @@ fn encoding_to_string(encoding: &Encoding) -> &'static str {
         Encoding::Int(IntEncoding::TimeMicroseconds) => "time_microseconds",
         Encoding::Binary(BinaryEncoding::Binary) => "binary",
         Encoding::Binary(BinaryEncoding::Utf8) => "utf8",
+    }
+}
+
+fn string_to_default(s: &str) -> Result<Default> {
+    match s {
+        "allow" => Ok(Default::Allow),
+        "deny" => Ok(Default::Deny),
+        _ => Err(eyre::eyre!("Invalid default value: {}", s)),
+    }
+}
+
+fn string_to_encoding(s: &str) -> Result<Encoding> {
+    match s {
+        "int" => Ok(Encoding::Int(IntEncoding::Int)),
+        "date" => Ok(Encoding::Int(IntEncoding::Date)),
+        "time_seconds" => Ok(Encoding::Int(IntEncoding::TimeSeconds)),
+        "time_milliseconds" => Ok(Encoding::Int(IntEncoding::TimeMilliseconds)),
+        "time_microseconds" => Ok(Encoding::Int(IntEncoding::TimeMicroseconds)),
+        "binary" => Ok(Encoding::Binary(BinaryEncoding::Binary)),
+        "utf8" => Ok(Encoding::Binary(BinaryEncoding::Utf8)),
+        _ => Err(eyre::eyre!("Invalid encoding value: {}", s)),
+    }
+}
+
+// Striped table JSON serialization
+
+fn striped_table_to_json(table: &striped::Table) -> serde_json::Value {
+    match table {
+        striped::Table::Binary {
+            default,
+            encoding,
+            data,
+        } => {
+            serde_json::json!({
+                "type": "binary",
+                "default": default_to_string(default),
+                "encoding": encoding_to_string(encoding),
+                "data": data
+            })
+        }
+        striped::Table::Array { default, column } => {
+            serde_json::json!({
+                "type": "array",
+                "default": default_to_string(default),
+                "column": striped_column_to_json(column)
+            })
+        }
+        striped::Table::Map {
+            default,
+            key_column,
+            value_column,
+        } => {
+            serde_json::json!({
+                "type": "map",
+                "default": default_to_string(default),
+                "key_column": striped_column_to_json(key_column),
+                "value_column": striped_column_to_json(value_column)
+            })
+        }
+    }
+}
+
+fn striped_column_to_json(column: &striped::Column) -> serde_json::Value {
+    match column {
+        striped::Column::Unit { count } => {
+            serde_json::json!({
+                "type": "unit",
+                "count": count
+            })
+        }
+        striped::Column::Int {
+            default,
+            encoding,
+            values,
+        } => {
+            serde_json::json!({
+                "type": "int",
+                "default": default_to_string(default),
+                "encoding": encoding_to_string(encoding),
+                "values": values
+            })
+        }
+        striped::Column::Double { default, values } => {
+            serde_json::json!({
+                "type": "double",
+                "default": default_to_string(default),
+                "values": values
+            })
+        }
+        striped::Column::Binary {
+            default,
+            encoding,
+            lengths,
+            data,
+        } => {
+            // Convert binary data to readable strings where possible
+            let data_display = if let Encoding::Binary(BinaryEncoding::Utf8) = encoding {
+                // Try to display as UTF-8 strings
+                let mut strings = Vec::new();
+                let mut offset = 0;
+                for &length in lengths {
+                    let end = offset + length;
+                    if end <= data.len() {
+                        let slice = &data[offset..end];
+                        match String::from_utf8(slice.to_vec()) {
+                            Ok(s) => strings.push(serde_json::Value::String(s)),
+                            Err(_) => strings.push(serde_json::Value::Array(
+                                slice
+                                    .iter()
+                                    .map(|b| serde_json::Value::Number((*b).into()))
+                                    .collect(),
+                            )),
+                        }
+                        offset = end;
+                    }
+                }
+                serde_json::Value::Array(strings)
+            } else {
+                // Display as raw bytes
+                serde_json::Value::Array(
+                    data.iter()
+                        .map(|b| serde_json::Value::Number((*b).into()))
+                        .collect(),
+                )
+            };
+
+            serde_json::json!({
+                "type": "binary",
+                "default": default_to_string(default),
+                "encoding": encoding_to_string(encoding),
+                "lengths": lengths,
+                "data": data_display
+            })
+        }
+        striped::Column::Array {
+            default,
+            lengths,
+            element,
+        } => {
+            serde_json::json!({
+                "type": "array",
+                "default": default_to_string(default),
+                "lengths": lengths,
+                "element": striped_column_to_json(element)
+            })
+        }
+        striped::Column::Struct { default, fields } => {
+            let field_objects: Vec<_> = fields
+                .iter()
+                .map(|field| {
+                    serde_json::json!({
+                        "name": field.name,
+                        "column": striped_column_to_json(&field.column)
+                    })
+                })
+                .collect();
+
+            serde_json::json!({
+                "type": "struct",
+                "default": default_to_string(default),
+                "fields": field_objects
+            })
+        }
+        striped::Column::Enum {
+            default,
+            tags,
+            variants,
+        } => {
+            let variant_objects: Vec<_> = variants
+                .iter()
+                .map(|variant| {
+                    serde_json::json!({
+                        "name": variant.name,
+                        "tag": variant.tag,
+                        "column": striped_column_to_json(&variant.column)
+                    })
+                })
+                .collect();
+
+            serde_json::json!({
+                "type": "enum",
+                "default": default_to_string(default),
+                "tags": tags,
+                "variants": variant_objects
+            })
+        }
+        striped::Column::Nested { lengths, table } => {
+            serde_json::json!({
+                "type": "nested",
+                "lengths": lengths,
+                "table": striped_table_to_json(table)
+            })
+        }
+        striped::Column::Reversed { inner } => {
+            serde_json::json!({
+                "type": "reversed",
+                "inner": striped_column_to_json(inner)
+            })
+        }
+    }
+}
+
+fn json_to_striped_table(json_value: &serde_json::Value) -> Result<striped::Table> {
+    let table_type = json_value["type"]
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("Missing type field"))?;
+
+    match table_type {
+        "binary" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let encoding = string_to_encoding(json_value["encoding"].as_str().unwrap_or("binary"))?;
+            let data = json_value["data"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Binary data must be an array"))?
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0) as u8)
+                .collect();
+
+            Ok(striped::Table::Binary {
+                default,
+                encoding,
+                data,
+            })
+        }
+        "array" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let column = json_to_striped_column(&json_value["column"])?;
+
+            Ok(striped::Table::Array {
+                default,
+                column: Box::new(column),
+            })
+        }
+        "map" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let key_column = json_to_striped_column(&json_value["key_column"])?;
+            let value_column = json_to_striped_column(&json_value["value_column"])?;
+
+            Ok(striped::Table::Map {
+                default,
+                key_column: Box::new(key_column),
+                value_column: Box::new(value_column),
+            })
+        }
+        _ => Err(eyre::eyre!(
+            "Unsupported striped table type: {}",
+            table_type
+        )),
+    }
+}
+
+fn json_to_striped_column(json_value: &serde_json::Value) -> Result<striped::Column> {
+    let column_type = json_value["type"]
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("Missing type field"))?;
+
+    match column_type {
+        "unit" => {
+            let count = json_value["count"].as_u64().unwrap_or(0) as usize;
+            Ok(striped::Column::Unit { count })
+        }
+        "int" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let encoding = string_to_encoding(json_value["encoding"].as_str().unwrap_or("int"))?;
+            let values = json_value["values"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Int values must be an array"))?
+                .iter()
+                .map(|v| v.as_i64().unwrap_or(0))
+                .collect();
+
+            Ok(striped::Column::Int {
+                default,
+                encoding,
+                values,
+            })
+        }
+        "double" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let values = json_value["values"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Double values must be an array"))?
+                .iter()
+                .map(|v| v.as_f64().unwrap_or(0.0))
+                .collect();
+
+            Ok(striped::Column::Double { default, values })
+        }
+        "binary" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let encoding = string_to_encoding(json_value["encoding"].as_str().unwrap_or("binary"))?;
+            let lengths = json_value["lengths"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Binary lengths must be an array"))?
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0) as usize)
+                .collect();
+            let data = json_value["data"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Binary data must be an array"))?
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").bytes().collect::<Vec<u8>>())
+                .flatten()
+                .collect();
+
+            Ok(striped::Column::Binary {
+                default,
+                encoding,
+                lengths,
+                data,
+            })
+        }
+        "array" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let lengths = json_value["lengths"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Array lengths must be an array"))?
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0) as usize)
+                .collect();
+            let element = json_to_striped_column(&json_value["element"])?;
+
+            Ok(striped::Column::Array {
+                default,
+                lengths,
+                element: Box::new(element),
+            })
+        }
+        "struct" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let fields = json_value["fields"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Struct fields must be an array"))?
+                .iter()
+                .map(|field| {
+                    let name = field["name"].as_str().unwrap_or("").to_string();
+                    let column = json_to_striped_column(&field["column"])?;
+                    Ok(striped::FieldColumn { name, column })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(striped::Column::Struct { default, fields })
+        }
+        "enum" => {
+            let default = string_to_default(json_value["default"].as_str().unwrap_or("allow"))?;
+            let tags = json_value["tags"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Enum tags must be an array"))?
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0) as u32)
+                .collect();
+            let variants = json_value["variants"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Enum variants must be an array"))?
+                .iter()
+                .map(|variant| {
+                    let name = variant["name"].as_str().unwrap_or("").to_string();
+                    let tag = variant["tag"].as_u64().unwrap_or(0) as u32;
+                    let column = json_to_striped_column(&variant["column"])?;
+                    Ok(striped::VariantColumn { name, tag, column })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            Ok(striped::Column::Enum {
+                default,
+                tags,
+                variants,
+            })
+        }
+        "nested" => {
+            let lengths = json_value["lengths"]
+                .as_array()
+                .ok_or_else(|| eyre::eyre!("Nested lengths must be an array"))?
+                .iter()
+                .map(|v| v.as_u64().unwrap_or(0) as usize)
+                .collect();
+            let table = json_to_striped_table(&json_value["table"])?;
+
+            Ok(striped::Column::Nested {
+                lengths,
+                table: Box::new(table),
+            })
+        }
+        "reversed" => {
+            let inner = json_to_striped_column(&json_value["inner"])?;
+            Ok(striped::Column::Reversed {
+                inner: Box::new(inner),
+            })
+        }
+        _ => Err(eyre::eyre!(
+            "Unsupported striped column type: {}",
+            column_type
+        )),
+    }
+}
+
+fn infer_schema_from_striped_table(striped_table: &striped::Table) -> Result<TableSchema> {
+    match striped_table {
+        striped::Table::Binary {
+            default, encoding, ..
+        } => Ok(TableSchema::Binary {
+            default: default.clone(),
+            encoding: encoding.clone(),
+        }),
+        striped::Table::Array { default, column } => {
+            let element_schema = infer_schema_from_striped_column(column)?;
+            Ok(TableSchema::Array {
+                default: default.clone(),
+                element: Box::new(element_schema),
+            })
+        }
+        striped::Table::Map {
+            default,
+            key_column,
+            value_column,
+        } => {
+            let key_schema = infer_schema_from_striped_column(key_column)?;
+            let value_schema = infer_schema_from_striped_column(value_column)?;
+            Ok(TableSchema::Map {
+                default: default.clone(),
+                key: Box::new(key_schema),
+                value: Box::new(value_schema),
+            })
+        }
+    }
+}
+
+fn infer_schema_from_striped_column(column: &striped::Column) -> Result<ValueSchema> {
+    match column {
+        striped::Column::Unit { .. } => Ok(ValueSchema::Unit),
+        striped::Column::Int {
+            default, encoding, ..
+        } => Ok(ValueSchema::Int {
+            default: default.clone(),
+            encoding: encoding.clone(),
+        }),
+        striped::Column::Double { default, .. } => Ok(ValueSchema::Double {
+            default: default.clone(),
+        }),
+        striped::Column::Binary {
+            default, encoding, ..
+        } => Ok(ValueSchema::Binary {
+            default: default.clone(),
+            encoding: encoding.clone(),
+        }),
+        striped::Column::Array {
+            default, element, ..
+        } => {
+            let element_schema = infer_schema_from_striped_column(element)?;
+            Ok(ValueSchema::Array {
+                default: default.clone(),
+                element: Box::new(element_schema),
+            })
+        }
+        striped::Column::Struct { default, fields } => {
+            let field_schemas: Result<Vec<_>> = fields
+                .iter()
+                .map(|field| {
+                    let schema = infer_schema_from_striped_column(&field.column)?;
+                    Ok(FieldSchema {
+                        name: field.name.clone(),
+                        schema,
+                    })
+                })
+                .collect();
+            Ok(ValueSchema::Struct {
+                default: default.clone(),
+                fields: field_schemas?,
+            })
+        }
+        striped::Column::Enum {
+            default, variants, ..
+        } => {
+            let variant_schemas: Result<Vec<_>> = variants
+                .iter()
+                .map(|variant| {
+                    let schema = infer_schema_from_striped_column(&variant.column)?;
+                    Ok(VariantSchema {
+                        name: variant.name.clone(),
+                        tag: variant.tag,
+                        schema,
+                    })
+                })
+                .collect();
+            Ok(ValueSchema::Enum {
+                default: default.clone(),
+                variants: variant_schemas?,
+            })
+        }
+        striped::Column::Nested { table, .. } => {
+            let table_schema = infer_schema_from_striped_table(table)?;
+            Ok(ValueSchema::Nested {
+                table: Box::new(table_schema),
+            })
+        }
+        striped::Column::Reversed { inner } => {
+            let inner_schema = infer_schema_from_striped_column(inner)?;
+            Ok(ValueSchema::Reversed {
+                inner: Box::new(inner_schema),
+            })
+        }
     }
 }

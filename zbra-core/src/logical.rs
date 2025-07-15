@@ -2,9 +2,10 @@
 
 use crate::data::{Default, Encoding, Field, Table, Value};
 use crate::error::{LogicalError, SchemaError};
+use serde::{Deserialize, Serialize};
 
 /// Schema definition for tables
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TableSchema {
     Binary {
         default: Default,
@@ -22,7 +23,7 @@ pub enum TableSchema {
 }
 
 /// Schema definition for values
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ValueSchema {
     Unit,
     Int {
@@ -57,14 +58,14 @@ pub enum ValueSchema {
 }
 
 /// Schema for struct fields
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FieldSchema {
     pub name: String,
     pub schema: ValueSchema,
 }
 
 /// Schema for enum variants
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantSchema {
     pub name: String,
     pub tag: u32,
