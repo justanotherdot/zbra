@@ -43,10 +43,20 @@ pub enum StripedError {
 #[derive(Debug)]
 pub enum BinaryError {
     InvalidHeader,
+    InvalidMagicNumber,
     CorruptedData(String),
     UnsupportedVersion(u32),
     DecompressionFailure(String),
     SerializationFailure(String),
+    SerializationError(String),
+    DeserializationError(String),
+    InvalidTableTag(u8),
+    InvalidColumnTag(u8),
+    InvalidDefaultTag(u8),
+    InvalidEncodingTag(u8),
+    InvalidIntEncodingTag(u8),
+    InvalidBinaryEncodingTag(u8),
+    IoError(std::io::Error),
 }
 
 // Error trait implementations
@@ -151,6 +161,9 @@ impl fmt::Display for BinaryError {
             BinaryError::InvalidHeader => {
                 write!(f, "Invalid binary format header")
             }
+            BinaryError::InvalidMagicNumber => {
+                write!(f, "Invalid magic number in binary file")
+            }
             BinaryError::CorruptedData(msg) => {
                 write!(f, "Corrupted data: {}", msg)
             }
@@ -162,6 +175,33 @@ impl fmt::Display for BinaryError {
             }
             BinaryError::SerializationFailure(msg) => {
                 write!(f, "Serialization failed: {}", msg)
+            }
+            BinaryError::SerializationError(msg) => {
+                write!(f, "Serialization error: {}", msg)
+            }
+            BinaryError::DeserializationError(msg) => {
+                write!(f, "Deserialization error: {}", msg)
+            }
+            BinaryError::InvalidTableTag(tag) => {
+                write!(f, "Invalid table tag: {}", tag)
+            }
+            BinaryError::InvalidColumnTag(tag) => {
+                write!(f, "Invalid column tag: {}", tag)
+            }
+            BinaryError::InvalidDefaultTag(tag) => {
+                write!(f, "Invalid default tag: {}", tag)
+            }
+            BinaryError::InvalidEncodingTag(tag) => {
+                write!(f, "Invalid encoding tag: {}", tag)
+            }
+            BinaryError::InvalidIntEncodingTag(tag) => {
+                write!(f, "Invalid int encoding tag: {}", tag)
+            }
+            BinaryError::InvalidBinaryEncodingTag(tag) => {
+                write!(f, "Invalid binary encoding tag: {}", tag)
+            }
+            BinaryError::IoError(err) => {
+                write!(f, "I/O error: {}", err)
             }
         }
     }
@@ -192,6 +232,15 @@ impl From<BinaryError> for ConversionError {
         ConversionError::Binary(error)
     }
 }
+
+impl From<std::io::Error> for BinaryError {
+    fn from(error: std::io::Error) -> Self {
+        BinaryError::IoError(error)
+    }
+}
+
+/// Convenience type alias for Results with BinaryError
+pub type Result<T> = std::result::Result<T, BinaryError>;
 
 #[cfg(test)]
 mod tests {

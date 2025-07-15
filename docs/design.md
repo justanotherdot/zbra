@@ -124,6 +124,38 @@ roaring = "0.10"       # Compressed bitmaps
 - Benchmark against original implementation
 - Support hybrid compression (different algorithms per column type)
 
+### Format Hierarchy and Architecture
+
+**Zbra's Four-Layer Format Design:**
+
+Zbra implements a carefully designed four-layer architecture where each format serves a specific purpose:
+
+1. **JSON Format** (Human Interface)
+   - **Purpose**: Human-authored data input and schema definitions
+   - **Usage**: Initial data creation, testing, debugging
+   - **Performance**: Not optimized for speed, designed for readability
+
+2. **Logical Format** (Internal Representation)
+   - **Purpose**: Internal validation and type checking
+   - **Usage**: Intermediate processing, schema validation
+   - **Performance**: Optimized for correctness, not speed
+
+3. **Striped Format** (Development/Debugging)
+   - **Purpose**: JSON-serialized columnar view for inspection and debugging
+   - **Usage**: Understanding data layout, debugging conversions, development
+   - **Performance**: JSON serialization for human readability - NOT for production storage
+   - **Key Insight**: This is columnar data represented as JSON for debugging purposes
+
+4. **Binary Format** (Production Storage)
+   - **Purpose**: Efficient compressed disk/wire format
+   - **Usage**: Production storage, data exchange, performance-critical applications
+   - **Performance**: Optimized for space and speed with compression pipeline
+
+**Format Selection Guidelines:**
+- **Development**: JSON → Striped (for debugging) → Binary (for testing)
+- **Production**: JSON → Binary (direct, bypassing striped JSON)
+- **Debugging**: Any format → Striped (for inspection) → Continue processing
+
 ### Parsing Strategy and Performance
 
 **Zbra's Zero-Parse Architecture:**

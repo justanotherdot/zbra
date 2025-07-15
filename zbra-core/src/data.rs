@@ -1,7 +1,9 @@
 // Core type definitions for zbra
 
+use serde::{Deserialize, Serialize};
+
 /// Core value types in zbra
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     // Phase 1 - Essential types
     Unit,
@@ -17,14 +19,14 @@ pub enum Value {
 }
 
 /// Named field in a struct
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub value: Value,
 }
 
 /// Table representation
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Table {
     Binary(Vec<u8>),
     Array(Vec<Value>),
@@ -32,14 +34,14 @@ pub enum Table {
 }
 
 /// Encoding specification for primitive types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Encoding {
     Int(IntEncoding),
     Binary(BinaryEncoding),
 }
 
 /// Integer encoding variants
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum IntEncoding {
     Int,
     Date,
@@ -49,14 +51,14 @@ pub enum IntEncoding {
 }
 
 /// Binary encoding variants
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BinaryEncoding {
     Binary,
     Utf8,
 }
 
 /// Default value handling
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Default {
     Allow,
     Deny,
