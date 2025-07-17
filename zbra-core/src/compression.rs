@@ -44,6 +44,11 @@ impl Default for CompressionConfig {
 ///
 /// This reduces the magnitude of values by subtracting a reference point (midpoint),
 /// which improves compression ratios for subsequent bit-packing.
+///
+/// For date timestamps, this encoding is crucial for compression efficiency:
+/// - Raw timestamps (e.g., year 2100) require ~42 bits
+/// - After subtracting median, deltas often fit in ≤32 bits  
+/// - This keeps BP64 bit-packing efficient instead of falling back to 8-byte storage
 pub fn frame_of_reference_encode(values: &[i64]) -> (i64, Vec<i64>) {
     if values.is_empty() {
         return (0, Vec::new());
@@ -129,9 +134,14 @@ pub fn bp64_pack(values: &[u64]) -> Result<Vec<u8>> {
         return Ok(packed);
     }
 
-    // For very large bit widths, use a simpler approach
+    // Compression efficiency threshold: 32-bit bit width
+    //
+    // BP64 bit-packing is most efficient for values requiring ≤32 bits.
+    // Beyond this threshold, we fall back to uncompressed 8-byte storage.
+    // This threshold influences the date validation limit (Jan 1, 2100)
+    // to ensure timestamps + frame-of-reference deltas stay efficient.
     if bit_width >= 32 {
-        // Just store as little-endian 8-byte values
+        // Fall back to uncompressed 8-byte storage for large values
         for &value in values {
             packed.extend_from_slice(&value.to_le_bytes());
         }
@@ -236,10 +246,23 @@ pub fn decompress_binary(data: &[u8], algorithm: &CompressionAlgorithm) -> Resul
     match algorithm {
         CompressionAlgorithm::None => Ok(data.to_vec()),
         CompressionAlgorithm::Zstd { .. } => {
-            zstd::bulk::decompress(data, data.len() * 4) // Estimate decompressed size
-                .map_err(|e| {
-                    BinaryError::DecompressionError(format!("Zstd decompression failed: {}", e))
-                })
+            // Try progressively larger buffer sizes until successful
+            let mut buffer_size = data.len() * 4;
+            loop {
+                match zstd::bulk::decompress(data, buffer_size) {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        if buffer_size > data.len() * 100 {
+                            // Give up after trying 100x expansion
+                            return Err(BinaryError::DecompressionError(format!(
+                                "Zstd decompression failed: {}",
+                                e
+                            )));
+                        }
+                        buffer_size *= 2;
+                    }
+                }
+            }
         } // FUTURE: Add other compression algorithms
     }
 }

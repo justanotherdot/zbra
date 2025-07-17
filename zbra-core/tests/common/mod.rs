@@ -213,7 +213,25 @@ pub fn arb_table() -> impl Strategy<Value = Table> {
 pub fn arb_value_for_schema(schema: &ValueSchema) -> BoxedStrategy<Value> {
     match schema {
         ValueSchema::Unit => Just(Value::Unit).boxed(),
-        ValueSchema::Int { .. } => any::<i64>().prop_map(Value::Int).boxed(),
+        ValueSchema::Int { encoding, .. } => match encoding {
+            Encoding::Int(IntEncoding::Date) => {
+                // Generate valid date timestamps (0 to Jan 1, 2100)
+                (0i64..=4102444800000i64).prop_map(Value::Int).boxed()
+            }
+            Encoding::Int(IntEncoding::TimeSeconds) => {
+                // Generate reasonable Unix timestamps in seconds
+                (0i64..=4102444800i64).prop_map(Value::Int).boxed()
+            }
+            Encoding::Int(IntEncoding::TimeMilliseconds) => {
+                // Generate reasonable Unix timestamps in milliseconds
+                (0i64..=4102444800000i64).prop_map(Value::Int).boxed()
+            }
+            Encoding::Int(IntEncoding::TimeMicroseconds) => {
+                // Generate reasonable Unix timestamps in microseconds
+                (0i64..=4102444800000000i64).prop_map(Value::Int).boxed()
+            }
+            _ => any::<i64>().prop_map(Value::Int).boxed(),
+        },
         ValueSchema::Double { .. } => any::<f64>().prop_map(Value::Double).boxed(),
         ValueSchema::Binary { encoding, .. } => match encoding {
             Encoding::Binary(BinaryEncoding::Binary) => {
