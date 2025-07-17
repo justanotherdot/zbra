@@ -1,6 +1,6 @@
 // Logical layer - human-readable representation
 
-use crate::data::{Default, Encoding, Field, Table, Value};
+use crate::data::{BinaryEncoding, Default, Encoding, Field, IntEncoding, Table, Value};
 use crate::error::{LogicalError, SchemaError};
 use serde::{Deserialize, Serialize};
 
@@ -153,9 +153,47 @@ impl Value {
     pub fn validate_schema(&self, schema: &ValueSchema) -> Result<(), SchemaError> {
         match (self, schema) {
             (Value::Unit, ValueSchema::Unit) => Ok(()),
-            (Value::Int(_), ValueSchema::Int { .. }) => Ok(()),
+            (Value::Int(n), ValueSchema::Int { encoding, .. }) => {
+                // Basic validation for integer encoding
+                match encoding {
+                    Encoding::Int(IntEncoding::Date) => {
+                        // Date validation optimized for compression efficiency.
+                        //
+                        // Upper limit: 4102444800000 (January 1, 2100 00:00:00 UTC)
+                        // This 42-bit timestamp ensures optimal compression performance:
+                        // - Frame-of-reference encoding creates deltas by subtracting median
+                        // - For typical datasets, deltas stay within 32-bit range
+                        // - BP64 bit-packing is efficient for ≤32-bit values
+                        // - Beyond this limit, compression falls back to 8-byte storage
+                        //
+                        // Lower limit: 0 (January 1, 1970 00:00:00 UTC - Unix epoch)
+                        if *n < 0 || *n > 4102444800000 {
+                            return Err(SchemaError::UnsupportedType(format!(
+                                "Date value {} is outside valid range (0 to 4102444800000)",
+                                n
+                            )));
+                        }
+                    }
+                    _ => {} // Other encodings pass through
+                }
+                Ok(())
+            }
             (Value::Double(_), ValueSchema::Double { .. }) => Ok(()),
-            (Value::Binary(_), ValueSchema::Binary { .. }) => Ok(()),
+            (Value::Binary(data), ValueSchema::Binary { encoding, .. }) => {
+                // Validate binary encoding
+                match encoding {
+                    Encoding::Binary(BinaryEncoding::Utf8) => {
+                        // Validate UTF-8 encoding
+                        if let Err(_) = std::str::from_utf8(data) {
+                            return Err(SchemaError::UnsupportedType(
+                                "Invalid UTF-8 encoding in binary data".to_string(),
+                            ));
+                        }
+                    }
+                    _ => {} // Binary encoding passes through
+                }
+                Ok(())
+            }
             (Value::Array(values), ValueSchema::Array { element, .. }) => {
                 for value in values {
                     value.validate_schema(element)?;
@@ -338,7 +376,8 @@ impl Value {
                         value: Box::new(Value::default_for_schema(&first_variant.schema)),
                     }
                 } else {
-                    // TODO: handle empty enum case
+                    // Empty enums have no valid values - this is a schema design error
+                    // Return Unit as a fallback, but this should be caught in schema validation
                     Value::Unit
                 }
             }
@@ -347,6 +386,74 @@ impl Value {
             }
             ValueSchema::Reversed { inner } => {
                 Value::Reversed(Box::new(Value::default_for_schema(inner)))
+            }
+        }
+    }
+}
+
+impl ValueSchema {
+    /// Validate the schema itself for consistency
+    pub fn validate(&self) -> Result<(), SchemaError> {
+        match self {
+            ValueSchema::Struct { fields, .. } => {
+                // Check for empty structs
+                if fields.is_empty() {
+                    return Err(SchemaError::UnsupportedType(
+                        "Empty struct schemas are not supported".to_string(),
+                    ));
+                }
+
+                // Check for duplicate field names
+                let mut field_names = std::collections::HashSet::new();
+                for field in fields {
+                    if !field_names.insert(&field.name) {
+                        return Err(SchemaError::UnsupportedType(format!(
+                            "Duplicate field name: {}",
+                            field.name
+                        )));
+                    }
+                    field.schema.validate()?;
+                }
+                Ok(())
+            }
+            ValueSchema::Enum { variants, .. } => {
+                // Check for empty enums
+                if variants.is_empty() {
+                    return Err(SchemaError::UnsupportedType(
+                        "Empty enum schemas are not supported".to_string(),
+                    ));
+                }
+
+                // Check for duplicate tags
+                let mut tags = std::collections::HashSet::new();
+                for variant in variants {
+                    if !tags.insert(variant.tag) {
+                        return Err(SchemaError::UnsupportedType(format!(
+                            "Duplicate enum tag: {}",
+                            variant.tag
+                        )));
+                    }
+                    variant.schema.validate()?;
+                }
+                Ok(())
+            }
+            ValueSchema::Array { element, .. } => element.validate(),
+            ValueSchema::Nested { table } => table.validate(),
+            ValueSchema::Reversed { inner } => inner.validate(),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl TableSchema {
+    /// Validate the schema itself for consistency
+    pub fn validate(&self) -> Result<(), SchemaError> {
+        match self {
+            TableSchema::Binary { .. } => Ok(()),
+            TableSchema::Array { element, .. } => element.validate(),
+            TableSchema::Map { key, value, .. } => {
+                key.validate()?;
+                value.validate()
             }
         }
     }
